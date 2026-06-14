@@ -7,23 +7,33 @@ struct DiskAnalyzerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
-
-            if viewModel.isScanning {
-                scanningOverlay
-            } else if let current = viewModel.currentNode {
-                mainContent(for: current)
+            if viewModel.currentNode != nil {
+                analyzerContent
             } else {
-                welcomeView
+                HomeScreenView(
+                    volumeName: viewModel.volumeDisplayName,
+                    totalCapacity: viewModel.volumeStats.totalCapacity,
+                    availableCapacity: viewModel.volumeStats.availableCapacity,
+                    isScanning: viewModel.isScanning,
+                    onScan: viewModel.scanSystemDisk
+                )
             }
 
-            BasketView(
-                items: viewModel.basket,
-                onRemove: viewModel.removeFromBasket,
-                onClear: viewModel.clearBasket,
-                onDelete: viewModel.deleteBasketContents,
-                onDropPath: handleDropPath
-            )
+            if viewModel.showScanPanel {
+                ScanProgressPanel(
+                    progress: viewModel.scanProgress,
+                    logLines: viewModel.scanLogLines,
+                    status: viewModel.scanStatus
+                )
+            } else if viewModel.currentNode != nil {
+                BasketView(
+                    items: viewModel.basket,
+                    onRemove: viewModel.removeFromBasket,
+                    onClear: viewModel.clearBasket,
+                    onDelete: viewModel.deleteBasketContents,
+                    onDropPath: handleDropPath
+                )
+            }
         }
         .background(AppTheme.windowBackground)
         .preferredColorScheme(.light)
@@ -32,8 +42,15 @@ struct DiskAnalyzerView: View {
         } message: {
             Text(viewModel.deletionMessage ?? "")
         }
-        .onAppear {
-            viewModel.launchInitialScan()
+    }
+
+    private var analyzerContent: some View {
+        VStack(spacing: 0) {
+            topBar
+
+            if let current = viewModel.currentNode {
+                mainContent(for: current)
+            }
         }
     }
 
@@ -65,12 +82,12 @@ struct DiskAnalyzerView: View {
 
             Spacer()
 
-            if viewModel.isExpandingFolder || viewModel.isBackgroundScanning {
+            if viewModel.isExpandingFolder {
                 ProgressView()
                     .controlSize(.small)
             }
 
-            if !viewModel.isScanning, viewModel.indexedFolderCount > 0 {
+            if !viewModel.showScanPanel, viewModel.indexedFolderCount > 0 {
                 Text("\(viewModel.indexedFolderCount) папок")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -138,41 +155,6 @@ struct DiskAnalyzerView: View {
             .frame(minWidth: 280, maxWidth: 360)
             .background(AppTheme.panelBackground)
         }
-    }
-
-    private var scanningOverlay: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-                .controlSize(.large)
-            Text("Аналіз диска…")
-                .font(.headline)
-            Text(viewModel.scanStatus)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            if viewModel.indexedFolderCount > 0 {
-                Text("Знайдено \(viewModel.indexedFolderCount) папок")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(AppTheme.panelBackground)
-    }
-
-    private var welcomeView: some View {
-        VStack(spacing: 20) {
-            ProgressView()
-                .controlSize(.large)
-            Text("CleanTreeMac")
-                .font(.largeTitle.bold())
-            Text("Запуск аналізу Macintosh HD…")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(AppTheme.panelBackground)
     }
 
     private func handleDropPath(_ path: String) {

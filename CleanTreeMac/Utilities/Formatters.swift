@@ -13,6 +13,38 @@ enum ByteFormat {
     }
 }
 
+struct ScanLogEntry: Identifiable {
+    let id = UUID()
+    let timestamp: String
+    let message: String
+
+    static func make(_ message: String, date: Date = Date()) -> ScanLogEntry {
+        ScanLogEntry(timestamp: ScanLogFormat.timestamp(for: date), message: message)
+    }
+
+    var formattedLine: String {
+        "\(timestamp)  \(message)"
+    }
+}
+
+extension Array where Element == ScanLogEntry {
+    var clipboardText: String {
+        map(\.formattedLine).joined(separator: "\n")
+    }
+}
+
+enum ScanLogFormat {
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    static func timestamp(for date: Date = Date()) -> String {
+        timeFormatter.string(from: date)
+    }
+}
+
 enum ChartPalette {
     static let segmentColors: [Double] = [
         0.72, 0.68, 0.64, 0.60, 0.56, 0.52, 0.48, 0.44, 0.40, 0.36

@@ -48,21 +48,27 @@ enum DirectoryScanner {
         let rootURL = SystemPaths.systemRoot
         let volume = VolumeStats.forVolume(at: rootURL)
 
-        var latestRoot = await fallbackMacintoshHD(volume: volume, includeHiddenSpace: false)
+        var latestRoot = FileNode(
+            name: "Macintosh HD",
+            url: SystemPaths.systemRoot,
+            size: volume.totalCapacity,
+            isDirectory: true
+        )
 
-        // Етап 1: швидкий огляд верхнього рівня
-        if let output = await FolderSizeCalculator.fullSnapshot(path: "/", depth: 2),
-           let tree = FolderSizeCalculator.buildTree(from: output, rootURL: rootURL) {
-            latestRoot = macintoshHDRoot(from: tree, volume: volume, includeHiddenSpace: false)
-            onProgress?(ScanProgress(scannedFolders: lineCount(in: output), currentPath: "/"))
+        async let output2 = FolderSizeCalculator.fullSnapshot(path: "/", depth: 2)
+        async let output5 = FolderSizeCalculator.fullSnapshot(path: "/", depth: 5)
+
+        if let out2 = await output2,
+           let tree2 = FolderSizeCalculator.buildTree(from: out2, rootURL: rootURL) {
+            latestRoot = macintoshHDRoot(from: tree2, volume: volume, includeHiddenSpace: false)
+            onProgress?(ScanProgress(scannedFolders: lineCount(in: out2), currentPath: "/"))
             onPartialUpdate?(latestRoot)
         }
 
-        // Етап 2: уточнене дерево для навігації
-        if let output = await FolderSizeCalculator.fullSnapshot(path: "/", depth: 5),
-           let tree = FolderSizeCalculator.buildTree(from: output, rootURL: rootURL) {
-            latestRoot = macintoshHDRoot(from: tree, volume: volume, includeHiddenSpace: true)
-            onProgress?(ScanProgress(scannedFolders: lineCount(in: output), currentPath: "/"))
+        if let out5 = await output5,
+           let tree5 = FolderSizeCalculator.buildTree(from: out5, rootURL: rootURL) {
+            latestRoot = macintoshHDRoot(from: tree5, volume: volume, includeHiddenSpace: true)
+            onProgress?(ScanProgress(scannedFolders: lineCount(in: out5), currentPath: "/"))
         }
 
         return latestRoot

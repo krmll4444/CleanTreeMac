@@ -12,4 +12,8 @@ enum AppTheme {
     static let segmentStroke = Color.black.opacity(0.12)
     static let warningBackground = Color.orange.opacity(0.12)
     static let warningBorder = Color.orange.opacity(0.35)
+    static let terminalBackground = Color(red: 0.11, green: 0.12, blue: 0.14)
+    static let terminalHeader = Color(red: 0.15, green: 0.16, blue: 0.18)
+    static let terminalText = Color(red: 0.78, green: 0.92, blue: 0.78)
+    static let terminalMuted = Color(red: 0.55, green: 0.58, blue: 0.62)
 }

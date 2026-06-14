@@ -18,7 +18,7 @@ enum FolderSizeCalculator {
         guard data.sizeMap[data.rootPath] != nil || !(data.childrenMap[data.rootPath] ?? []).isEmpty else {
             return nil
         }
-        return assembleTree(from: data, at: data.rootPath)
+        return assembleTree(from: data, at: data.rootPath).map { sortTreeBySize($0) }
     }
 
     static func parseTree(from output: String, rootURL: URL) -> DUTreeData {
@@ -42,19 +42,13 @@ enum FolderSizeCalculator {
             childrenMap[parentPath, default: []].append(entryPath)
         }
 
-        for key in childrenMap.keys {
-            childrenMap[key] = Array(Set(childrenMap[key] ?? []))
-        }
-
         return DUTreeData(sizeMap: sizeMap, childrenMap: childrenMap, rootPath: rootPath)
     }
 
     private static func assembleTree(from data: DUTreeData, at path: String) -> FileNode? {
         let url = URL(fileURLWithPath: path, isDirectory: true)
         let size = data.sizeMap[path] ?? 0
-        let childPaths = (data.childrenMap[path] ?? []).sorted {
-            (data.sizeMap[$0] ?? 0) > (data.sizeMap[$1] ?? 0)
-        }
+        let childPaths = data.childrenMap[path] ?? []
 
         let children = childPaths.compactMap { assembleTree(from: data, at: $0) }
         let isDirectory = !children.isEmpty || path == data.rootPath
@@ -65,6 +59,22 @@ enum FolderSizeCalculator {
             size: size,
             isDirectory: isDirectory,
             children: children
+        )
+    }
+
+    private static func sortTreeBySize(_ node: FileNode) -> FileNode {
+        let sortedChildren = node.children
+            .map { sortTreeBySize($0) }
+            .sorted { $0.size > $1.size }
+
+        return FileNode(
+            id: node.id,
+            name: node.name,
+            url: node.url,
+            size: node.size,
+            isDirectory: node.isDirectory,
+            children: sortedChildren,
+            kind: node.kind
         )
     }
 
