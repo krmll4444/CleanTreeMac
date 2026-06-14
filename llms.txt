@@ -1,0 +1,102 @@
+# CleanTreeMac
+
+> Open-source macOS disk space analyzer with sunburst visualization and a deletion basket.
+
+CleanTreeMac scans folders using the system `du` command, builds a `FileNode` tree, and displays sizes in a DaisyDisk-style UI. Users navigate folders, queue items in a basket, and delete to Trash.
+
+## Quick facts
+
+- Language: Swift 5, SwiftUI
+- Platform: macOS (native AppKit/SwiftUI)
+- Sandbox: disabled (user-level file access)
+- Scan engine: `/usr/bin/du -x -k -d N <path>`
+- License: open source
+
+## Architecture map
+
+### Entry & UI layer
+
+- CleanTreeMac/CleanTreeMacApp.swift — `@main`, WindowGroup
+- CleanTreeMac/ContentView.swift — hosts DiskAnalyzerView
+- CleanTreeMac/Views/DiskAnalyzerView.swift — main layout: top bar, chart, list, basket
+- CleanTreeMac/Views/SunburstChartView.swift — annular segments from DisplayItem[]
+- CleanTreeMac/Views/FileListView.swift — scrollable list + footer (free space rows)
+- CleanTreeMac/Views/BreadcrumbView.swift — path breadcrumbs
+- CleanTreeMac/Views/BasketView.swift — drag-drop delete queue
+
+### State
+
+- CleanTreeMac/ViewModels/DiskAnalyzerViewModel.swift — @Observable @MainActor
+  - Owns DiskIndex, navigation history (back/forward), basket
+  - displayItems: chart/list data for current folder
+  - startScan → DirectoryScanner.scan with onPartialUpdate for progressive UI
+  - navigateInto → DiskIndex lookup; expandFolderIfNeeded → scanFolder
+
+### Models
+
+- CleanTreeMac/Models/FileNode.swift
+  - FileNode: id, name, url, size, isDirectory, children, kind (folder | groupedSmall | hiddenSpace | freeSpace | freeAndPurgeable)
+  - DisplayItem: wrapper for chart/list coloring
+  - BasketItem: queued deletion entry
+
+### Services (core logic — edit here for scan behavior)
+
+- CleanTreeMac/Services/DirectoryScanner.swift
+  - scan(url:) — routes "/" to scanMacintoshHD, else scanFolder
+  - scanMacintoshHD — stage 1: du d=2 + onPartialUpdate; stage 2: du d=5
+  - macintoshHDRoot — splits du tree into priority paths, small objects, hidden space
+  - scanFolder — du d=4 for drill-down
+  - fallbackFolder / fallbackMacintoshHD — FileManager fallback if du fails
+  - footerItems — free space rows at Macintosh HD root
+
+- CleanTreeMac/Services/FolderSizeCalculator.swift
+  - fullSnapshot(path:depth:) — single Process: du -x -k -d N path
+  - parseTree(from:rootURL:) — stdout → sizeMap + childrenMap
+  - buildTree(from:rootURL:) — assembles FileNode tree, children sorted by size desc
+
+- CleanTreeMac/Services/DiskIndex.swift
+  - pathMap: [String: FileNode] for O(1) navigation
+  - install(root:) — full reindex
+  - merge(node:) — replace branch, deindex old, index new, refreshAncestors
+
+- CleanTreeMac/Services/FileDeletionService.swift — FileManager.trashItem
+- CleanTreeMac/Services/SystemPaths.swift — systemRoot, macintoshHDPriorityPaths, displayName, specialURL
+
+### Utilities
+
+- CleanTreeMac/Utilities/Formatters.swift — ByteFormat, ChartPalette
+- CleanTreeMac/Utilities/AppTheme.swift — light theme colors
+
+## Data flow
+
+1. User opens app → DiskAnalyzerViewModel.launchInitialScan()
+2. DirectoryScanner.scanMacintoshHD()
+3. FolderSizeCalculator.fullSnapshot("/", depth: 2) → buildTree → onPartialUpdate → UI shows
+4. FolderSizeCalculator.fullSnapshot("/", depth: 5) → buildTree → final root
+5. DiskIndex.install(root)
+6. User clicks folder → navigateInto → resolve from DiskIndex → optional scanFolder if children empty
+7. User drops item in basket → deleteBasketContents → FileDeletionService → rescan
+
+## Priority root folders (Macintosh HD)
+
+/Users, /System, /Applications, /Library, /private
+
+Defined in SystemPaths.macintoshHDPriorityPaths.
+
+## Conventions for AI edits
+
+- Do not reintroduce App Sandbox without explicit request
+- Prefer single du calls over per-path Process spawns
+- Keep DiskAnalyzerViewModel/UI unchanged unless UI task specified
+- FileNode.kind drives navigation: hiddenSpace and freeSpace are not navigable
+- Special virtual URLs: /.cleantree/<identifier> via SystemPaths.specialURL
+- Ukrainian strings in UI are intentional (target locale)
+
+## Build
+
+open CleanTreeMac.xcodeproj && xcodebuild -scheme CleanTreeMac -configuration Debug build
+
+## Links
+
+- README: README.md
+- Agent guide: AGENTS.md
