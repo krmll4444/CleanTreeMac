@@ -2,23 +2,28 @@
 
 > Open-source macOS disk space analyzer with sunburst visualization and a deletion basket.
 
-CleanTreeMac scans folders using the system `du` command, builds a `FileNode` tree, and displays sizes in a DaisyDisk-style UI. Users navigate folders, queue items in a basket, and delete to Trash.
+CleanTreeMac scans folders using the system `du` command (with `FastDirectoryScanner` fallback), builds a `FileNode` tree, and displays sizes in a DaisyDisk-style UI. Users pick scan targets on the home screen, navigate folders, queue items in a basket, and delete to Trash.
 
 ## Quick facts
 
-- Language: Swift 5, SwiftUI
-- Platform: macOS (native AppKit/SwiftUI)
-- Sandbox: disabled (user-level file access)
-- Scan engine: `/usr/bin/du -x -k -d N <path>`
+- Language: Swift 5, SwiftUI + AppKit (NSOpenPanel)
+- Platform: macOS 26.2+ (native)
+- Sandbox: disabled (`ENABLE_APP_SANDBOX = NO`)
+- Scan engine: `/usr/bin/du -x -k -d 4 <path>` (parallel per selected path)
+- Fallback: `FastDirectoryScanner` (`getattrlistbulk`, `ATTR_FILE_ALLOCSIZE`)
+- UI locale: Ukrainian
 - License: open source
 
 ## Architecture map
 
 ### Entry & UI layer
 
-- CleanTreeMac/CleanTreeMacApp.swift — `@main`, WindowGroup
+- CleanTreeMac/CleanTreeMacApp.swift — @main, WindowGroup, light theme
 - CleanTreeMac/ContentView.swift — hosts DiskAnalyzerView
-- CleanTreeMac/Views/DiskAnalyzerView.swift — main layout: top bar, chart, list, basket
+- CleanTreeMac/Views/DiskAnalyzerView.swift — home vs analyzer layout; scan menu; progress panel
+- CleanTreeMac/Views/HomeScreenView.swift — volume stats, scan path checkboxes, Сканувати button
+- CleanTreeMac/Views/ScanProgressPanel.swift — progress bar, elapsed timer, terminal log, cancel, copy log
+- CleanTreeMac/Views/ScanSettingsView.swift — path checkboxes (also in scan menu)
 - CleanTreeMac/Views/SunburstChartView.swift — annular segments from DisplayItem[]
 - CleanTreeMac/Views/FileListView.swift — scrollable list + footer (free space rows)
 - CleanTreeMac/Views/BreadcrumbView.swift — path breadcrumbs
@@ -27,9 +32,13 @@ CleanTreeMac scans folders using the system `du` command, builds a `FileNode` tr
 ### State
 
 - CleanTreeMac/ViewModels/DiskAnalyzerViewModel.swift — @Observable @MainActor
-  - Owns DiskIndex, navigation history (back/forward), basket
-  - displayItems: chart/list data for current folder
-  - startScan → DirectoryScanner.scan with onPartialUpdate for progressive UI
+  - Owns DiskIndex, navigation history (back/forward), basket, scan log lines
+  - scanSettings: ScanSettings.load() — toggling paths does NOT auto-rescan
+  - launchInitialScan() → requestDocumentsAccess() → scanSystemDisk()
+  - requestDocumentsAccess() — NSOpenPanel for ~/Documents if not readable
+  - startScan(at:) — scan Task, heartbeat status, ScanLogger UI forwarding
+  - cancelScan() — cancel Task + FolderSizeCalculator.cancelActiveProcesses()
+  - displayItems / footerDisplayItems for chart and list
   - navigateInto → DiskIndex lookup; expandFolderIfNeeded → scanFolder
 
 ### Models
@@ -39,20 +48,39 @@ CleanTreeMac scans folders using the system `du` command, builds a `FileNode` tr
   - DisplayItem: wrapper for chart/list coloring
   - BasketItem: queued deletion entry
 
+- CleanTreeMac/Models/ScanSettings.swift
+  - paths persisted in UserDefaults key "scanSettings"
+  - selectablePaths: home directory, /Applications, /Library (from SystemPaths)
+  - orderedPaths: selected paths in display order
+
 ### Services (core logic — edit here for scan behavior)
 
 - CleanTreeMac/Services/DirectoryScanner.swift
   - scan(url:) — routes "/" to scanMacintoshHD, else scanFolder
-  - scanMacintoshHD — stage 1: du d=2 + onPartialUpdate; stage 2: du d=5
-  - macintoshHDRoot — splits du tree into priority paths, small objects, hidden space
-  - scanFolder — du d=4 for drill-down
-  - fallbackFolder / fallbackMacintoshHD — FileManager fallback if du fails
+  - scanMacintoshHD — parallel TaskGroup per ScanSettings path; depth=4; merge via MacintoshHDScanAccumulator
+  - onPartialUpdate fires after each path completes (not waiting for all)
+  - per path: du first → FastDirectoryScanner fallback if du/buildTree fails
+  - buildMacintoshHDRoot — priority children, small objects group, hidden space
+  - scanFolder — du depth 4 for drill-down; FileManager fallback
   - footerItems — free space rows at Macintosh HD root
+  - ScanProgress struct: scannedFolders, currentPath
 
 - CleanTreeMac/Services/FolderSizeCalculator.swift
-  - fullSnapshot(path:depth:) — single Process: du -x -k -d N path
-  - parseTree(from:rootURL:) — stdout → sizeMap + childrenMap
-  - buildTree(from:rootURL:) — assembles FileNode tree, children sorted by size desc
+  - fullSnapshot(path:depth:) — Process: /usr/bin/du -x -k -d N path
+  - runDU — streams stdout/stderr via readabilityHandler (prevents pipe deadlock)
+  - logs preflight (exists/readable), stderr lines, stdout progress, exit/signal
+  - DUProcessRegistry — register/terminateAll for cancel
+  - parseTree / buildTree — stdout → FileNode tree, children sorted by size desc
+  - du exit 1 with stdout is accepted (common with TCC Permission denied on stderr)
+
+- CleanTreeMac/Services/FastDirectoryScanner.swift
+  - getattrlistbulk fallback when du fails
+  - parallel sibling scan via DispatchQueue.concurrentPerform
+  - always recurses into .app/.framework/.bundle/.plugin
+
+- CleanTreeMac/Services/ScanLogger.swift
+  - tags: [scan], [du], [tree], [fast], [bulk], [merge]
+  - optional uiForwardFilter + uiForwardHandler → DiskAnalyzerViewModel scan log panel
 
 - CleanTreeMac/Services/DiskIndex.swift
   - pathMap: [String: FileNode] for O(1) navigation
@@ -60,37 +88,57 @@ CleanTreeMac scans folders using the system `du` command, builds a `FileNode` tr
   - merge(node:) — replace branch, deindex old, index new, refreshAncestors
 
 - CleanTreeMac/Services/FileDeletionService.swift — FileManager.trashItem
-- CleanTreeMac/Services/SystemPaths.swift — systemRoot, macintoshHDPriorityPaths, displayName, specialURL
+- CleanTreeMac/Services/SystemPaths.swift
+  - systemRoot, defaultScanPaths (home + /Applications), optionalScanPaths (/Library)
+  - excludedFromScan: /System, /private, /dev, /.vol
+  - macintoshHDPriorityPaths: /Users, /Applications, /Library
+  - displayName, specialURL (/.cleantree/<id>)
+  - VolumeStats.forVolume
 
 ### Utilities
 
-- CleanTreeMac/Utilities/Formatters.swift — ByteFormat, ChartPalette
+- CleanTreeMac/Utilities/Formatters.swift — ByteFormat, ScanLogEntry, ScanDurationFormat, ChartPalette
 - CleanTreeMac/Utilities/AppTheme.swift — light theme colors
 
 ## Data flow
 
-1. User opens app → DiskAnalyzerViewModel.launchInitialScan()
-2. DirectoryScanner.scanMacintoshHD()
-3. FolderSizeCalculator.fullSnapshot("/", depth: 2) → buildTree → onPartialUpdate → UI shows
-4. FolderSizeCalculator.fullSnapshot("/", depth: 5) → buildTree → final root
-5. DiskIndex.install(root)
-6. User clicks folder → navigateInto → resolve from DiskIndex → optional scanFolder if children empty
-7. User drops item in basket → deleteBasketContents → FileDeletionService → rescan
+1. User opens app → HomeScreenView (no auto-scan)
+2. User selects paths (checkboxes) and taps Сканувати → launchInitialScan()
+3. requestDocumentsAccess() if ~/Documents not readable → scanSystemDisk() → startScan("/")
+4. DirectoryScanner.scanMacintoshHD() — parallel du per ScanSettings path (depth 4)
+5. Each path: FolderSizeCalculator.fullSnapshot → buildTree → merge → onPartialUpdate → UI
+6. Final root with hidden space + DiskIndex.install
+7. User clicks folder → navigateInto → DiskIndex; empty branch → scanFolder
+8. User drops item in basket → deleteBasketContents → FileDeletionService → rescan
 
-## Priority root folders (Macintosh HD)
+## Scan paths (Macintosh HD)
 
-/Users, /System, /Applications, /Library, /private
+Default selected: user home directory, /Applications
+Optional: /Library
+Excluded: /System, /private, /dev, /.vol
 
-Defined in SystemPaths.macintoshHDPriorityPaths.
+Defined in SystemPaths.defaultScanPaths, optionalScanPaths, excludedFromScan.
+
+## Info.plist (generated)
+
+INFOPLIST_KEY_NSDocumentsFolderUsageDescription
+INFOPLIST_KEY_NSDesktopFolderUsageDescription
+INFOPLIST_KEY_NSDownloadsFolderUsageDescription
+
+Text: "CleanTreeMac аналізує вміст диску щоб показати використання простору"
 
 ## Conventions for AI edits
 
 - Do not reintroduce App Sandbox without explicit request
-- Prefer single du calls over per-path Process spawns
+- Do not auto-start scan on launch unless user asks
+- Checkbox path toggles must NOT trigger rescan (only Сканувати button)
+- Prefer one du call per scan path; parallel paths OK via TaskGroup
+- Keep streaming stdout/stderr in runDU — do not read pipes only after process exit
 - Keep DiskAnalyzerViewModel/UI unchanged unless UI task specified
 - FileNode.kind drives navigation: hiddenSpace and freeSpace are not navigable
 - Special virtual URLs: /.cleantree/<identifier> via SystemPaths.specialURL
 - Ukrainian strings in UI are intentional (target locale)
+- Minimize diff scope; no commits unless user requests
 
 ## Build
 
