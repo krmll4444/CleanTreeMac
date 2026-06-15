@@ -5,6 +5,8 @@ struct ScanProgressPanel: View {
     let progress: Double
     let logLines: [ScanLogEntry]
     let status: String
+    let scanStartDate: Date?
+    let onCancel: () -> Void
 
     @State private var didCopyLog = false
 
@@ -28,10 +30,17 @@ struct ScanProgressPanel: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(AppTheme.terminalMuted)
                     Spacer()
+                    if let scanStartDate {
+                        ScanElapsedLabel(startDate: scanStartDate)
+                    }
                     Text(status)
                         .font(.caption)
                         .foregroundStyle(AppTheme.terminalMuted)
                         .lineLimit(1)
+                    Button("Скасувати", action: onCancel)
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                     Button(action: copyLogToClipboard) {
                         Label(
                             didCopyLog ? "Скопійовано" : "Копіювати",
@@ -97,6 +106,21 @@ struct ScanProgressPanel: View {
     }
 }
 
+private struct ScanElapsedLabel: View {
+    let startDate: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: startDate, by: 1)) { context in
+            Label(
+                ScanDurationFormat.string(for: context.date.timeIntervalSince(startDate)),
+                systemImage: "timer"
+            )
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(AppTheme.terminalMuted)
+        }
+    }
+}
+
 #Preview {
     ScanProgressPanel(
         progress: 0.45,
@@ -106,7 +130,9 @@ struct ScanProgressPanel: View {
             .make("→ знайдено 128 папок"),
             .make("→ Аналіз: /Users")
         ],
-        status: "Сканування…"
+        status: "Сканування…",
+        scanStartDate: Date().addingTimeInterval(-83),
+        onCancel: {}
     )
     .frame(width: 700)
 }

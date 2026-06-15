@@ -20,6 +20,7 @@ final class DiskAnalyzerViewModel {
     var indexedFolderCount = 0
     var scanProgress: Double = 0
     var scanLogLines: [ScanLogEntry] = []
+    var scanStartDate: Date?
 
     var canGoBack = false
     var canGoForward = false
@@ -28,6 +29,8 @@ final class DiskAnalyzerViewModel {
     private var historyPaths: [URL] = []
     private var historyIndex = 0
     private let smallObjectThreshold = 0.005
+    private var scanTask: Task<Void, Never>?
+    private var scanGeneration = 0
 
     var displayItems: [DisplayItem] {
         guard let currentNode else { return [] }
@@ -92,8 +95,37 @@ final class DiskAnalyzerViewModel {
         SystemPaths.displayName(for: SystemPaths.systemRoot)
     }
 
+    var scanSettings: ScanSettings = ScanSettings.load()
+
+    var canScanSelectedPaths: Bool {
+        !scanSettings.orderedPaths.isEmpty
+    }
+
+    var selectableScanPaths: [String] {
+        ScanSettings.selectablePaths
+    }
+
     var showScanPanel: Bool {
         isScanning || isBackgroundScanning
+    }
+
+    func toggleScanPath(_ path: String) {
+        guard ScanSettings.selectablePaths.contains(path) else { return }
+
+        if scanSettings.paths.contains(path) {
+            scanSettings.paths.removeAll { $0 == path }
+        } else {
+            scanSettings.paths.append(path)
+        }
+        scanSettings.save()
+    }
+
+    func cancelScan() {
+        guard showScanPanel else { return }
+        scanGeneration += 1
+        scanTask?.cancel()
+        FolderSizeCalculator.cancelActiveProcesses()
+        finishScanCancelled()
     }
 
     private func chartColorIndex(for node: FileNode, fallback: Int) -> Int {
@@ -102,6 +134,36 @@ final class DiskAnalyzerViewModel {
         case .hiddenSpace: return -2
         default: return fallback
         }
+    }
+
+    func launchInitialScan() {
+        Task { await requestDocumentsAccess() }
+    }
+
+    func requestDocumentsAccess() async {
+        let documentsURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents")
+
+        // Перевірити чи є вже доступ
+        guard !FileManager.default.isReadableFile(atPath: documentsURL.path) else {
+            scanSystemDisk()
+            return
+        }
+
+        // Показати NSOpenPanel щоб отримати доступ
+        await MainActor.run {
+            let panel = NSOpenPanel()
+            panel.message = "CleanTreeMac потребує доступ до папки Documents для точного аналізу диску"
+            panel.prompt = "Надати доступ"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = false
+            panel.directoryURL = documentsURL
+            panel.runModal()
+            // Просто відкрити панель достатньо — macOS дає доступ після того як юзер бачить діалог
+        }
+
+        scanSystemDisk()
     }
 
     func scanSystemDisk() {
@@ -202,20 +264,65 @@ final class DiskAnalyzerViewModel {
     }
 
     private func startScan(at url: URL, preserveNavigation: Bool = false) {
+        scanTask?.cancel()
+        FolderSizeCalculator.cancelActiveProcesses()
+        scanGeneration += 1
+        let generation = scanGeneration
+
         isScanning = true
         isBackgroundScanning = false
         scanError = nil
         scanProgress = 0.05
         scanLogLines.removeAll()
+        scanStartDate = Date()
+
+        let logGeneration = generation
+        ScanLogger.uiForwardFilter = { ["du", "scan", "tree", "merge"].contains($0) }
+        ScanLogger.uiForwardHandler = { message in
+            Task { @MainActor in
+                guard logGeneration == self.scanGeneration else { return }
+                self.appendScanLog(message)
+            }
+        }
 
         let targetName = SystemPaths.displayName(for: url)
-        scanStatus = "Сканування: \(targetName)…"
-        appendScanLog("$ du -x -k -d 2 /  &  du -x -k -d 5 /")
+        let scanDepth = url.path == "/" ? 4 : DirectoryScanner.defaultFolderScanDepth
+        let pathsLabel = scanSettings.orderedPaths.joined(separator: ", ")
+        if url.path == "/" {
+            appendScanLog("$ du -x -k -d \(scanDepth) \(pathsLabel)")
+            scanStatus = "Сканування: \(pathsLabel)…"
+        } else {
+            appendScanLog("$ du -x -k -d \(scanDepth) \(url.path)")
+            scanStatus = "Сканування: \(targetName)…"
+        }
         appendScanLog("→ Початок аналізу: \(targetName)")
 
-        Task {
+        scanTask = Task {
+            defer {
+                Task { @MainActor in
+                    if generation == self.scanGeneration {
+                        ScanLogger.uiForwardFilter = nil
+                        ScanLogger.uiForwardHandler = nil
+                    }
+                }
+            }
+
+            let heartbeat = Task { @MainActor in
+                var elapsed = 0
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(5))
+                    elapsed += 5
+                    guard generation == self.scanGeneration, self.isScanning else { break }
+                    let label = url.path == "/" ? pathsLabel : url.path
+                    self.scanStatus = "du: \(label)… \(elapsed)s"
+                    self.scanProgress = min(0.45, self.scanProgress + 0.03)
+                }
+            }
+            defer { heartbeat.cancel() }
+
             let node = await DirectoryScanner.scan(url: url) { progress in
                 Task { @MainActor in
+                    guard generation == self.scanGeneration else { return }
                     self.indexedFolderCount = progress.scannedFolders
                     let path = SystemPaths.displayName(for: URL(fileURLWithPath: progress.currentPath))
                     self.scanStatus = "Сканування: \(path)…"
@@ -224,10 +331,18 @@ final class DiskAnalyzerViewModel {
                 }
             } onPartialUpdate: { partial in
                 Task { @MainActor in
+                    guard generation == self.scanGeneration else { return }
                     self.scanProgress = 0.55
                     self.appendScanLog("✓ Попередні дані готові · \(partial.children.count) розділів")
                     self.applyPartialScan(partial, preserveNavigation: preserveNavigation)
                 }
+            }
+
+            guard !Task.isCancelled, generation == self.scanGeneration else {
+                await MainActor.run {
+                    self.finishScanCancelled()
+                }
+                return
             }
 
             diskIndex.install(root: node)
@@ -236,9 +351,27 @@ final class DiskAnalyzerViewModel {
             isScanning = false
             isBackgroundScanning = false
             scanProgress = 1.0
-            scanStatus = "Готово · \(diskIndex.folderCount) папок"
-            appendScanLog("✓ Сканування завершено · \(diskIndex.folderCount) папок проіндексовано")
+            let elapsed = scanStartDate.map { Date().timeIntervalSince($0) } ?? 0
+            let durationLabel = ScanDurationFormat.string(for: elapsed)
+            scanStatus = "Готово · \(durationLabel) · \(diskIndex.folderCount) папок"
+            appendScanLog("✓ Сканування завершено · \(durationLabel) · \(diskIndex.folderCount) папок проіндексовано")
+            scanStartDate = nil
+            scanTask = nil
         }
+    }
+
+    private func finishScanCancelled() {
+        guard scanStartDate != nil || isScanning || isBackgroundScanning else { return }
+
+        isScanning = false
+        isBackgroundScanning = false
+        scanProgress = 0
+        let elapsed = scanStartDate.map { Date().timeIntervalSince($0) } ?? 0
+        let durationLabel = ScanDurationFormat.string(for: elapsed)
+        scanStatus = "Сканування скасовано · \(durationLabel)"
+        appendScanLog("✗ Сканування скасовано · \(durationLabel)")
+        scanStartDate = nil
+        scanTask = nil
     }
 
     private func appendScanLog(_ message: String) {
@@ -250,7 +383,7 @@ final class DiskAnalyzerViewModel {
         indexedFolderCount = diskIndex.folderCount
         isBackgroundScanning = true
         scanProgress = max(scanProgress, 0.6)
-        appendScanLog("→ Уточнення дерева (du -d 5)…")
+        appendScanLog("→ Уточнення дерева…")
 
         if !preserveNavigation, currentNode == nil || currentNode?.url.path == "/" {
             resetNavigation(to: partial)

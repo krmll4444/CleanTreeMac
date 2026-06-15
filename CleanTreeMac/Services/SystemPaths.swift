@@ -29,12 +29,17 @@ enum SystemPaths {
         URL(fileURLWithPath: "/")
     }
 
+    static let defaultScanPaths: [String] = [
+        FileManager.default.homeDirectoryForCurrentUser.path,
+        "/Applications"
+    ]
+    static let optionalScanPaths: [String] = ["/Library"]
+    static let excludedFromScan: [String] = ["/System", "/private", "/dev", "/.vol"]
+
     static let macintoshHDPriorityPaths: [String] = [
         "/Users",
-        "/System",
         "/Applications",
-        "/Library",
-        "/private"
+        "/Library"
     ]
 
     static func displayName(for url: URL) -> String {

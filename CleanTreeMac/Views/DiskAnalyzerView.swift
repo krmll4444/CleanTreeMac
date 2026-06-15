@@ -14,8 +14,11 @@ struct DiskAnalyzerView: View {
                     volumeName: viewModel.volumeDisplayName,
                     totalCapacity: viewModel.volumeStats.totalCapacity,
                     availableCapacity: viewModel.volumeStats.availableCapacity,
+                    selectedScanPaths: viewModel.scanSettings.paths,
+                    canScan: viewModel.canScanSelectedPaths,
                     isScanning: viewModel.isScanning,
-                    onScan: viewModel.scanSystemDisk
+                    onToggleScanPath: viewModel.toggleScanPath,
+                    onScan: viewModel.launchInitialScan
                 )
             }
 
@@ -23,7 +26,9 @@ struct DiskAnalyzerView: View {
                 ScanProgressPanel(
                     progress: viewModel.scanProgress,
                     logLines: viewModel.scanLogLines,
-                    status: viewModel.scanStatus
+                    status: viewModel.scanStatus,
+                    scanStartDate: viewModel.scanStartDate,
+                    onCancel: viewModel.cancelScan
                 )
             } else if viewModel.currentNode != nil {
                 BasketView(
@@ -94,9 +99,20 @@ struct DiskAnalyzerView: View {
             }
 
             Menu {
+                Section {
+                    ScanSettingsView(
+                        selectedPaths: viewModel.scanSettings.paths,
+                        isScanning: viewModel.isScanning,
+                        onTogglePath: viewModel.toggleScanPath
+                    )
+                }
+
+                Divider()
+
                 Button("Macintosh HD") {
                     viewModel.scanSystemDisk()
                 }
+                .disabled(!viewModel.canScanSelectedPaths)
                 Button("Домашня папка") {
                     viewModel.scanHomeDirectory()
                 }
