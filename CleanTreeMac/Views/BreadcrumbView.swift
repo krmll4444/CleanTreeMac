@@ -2,13 +2,17 @@ import SwiftUI
 
 struct BreadcrumbView: View {
     let breadcrumb: [FileNode]
+    let onSelectRoot: () -> Void
     let onSelect: (Int) -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                Text("Диски та папки")
-                    .foregroundStyle(.secondary)
+                Button("Диски та папки") {
+                    onSelectRoot()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
 
                 if !breadcrumb.isEmpty {
                     Image(systemName: "chevron.right")

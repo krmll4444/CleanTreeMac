@@ -45,7 +45,7 @@ final class DiskAnalyzerViewModel {
             }
         }
 
-        let children = currentNode.sortedChildren.filter { $0.isDirectory || $0.size > 0 }
+        let children = currentNode.sortedChildren.filter { $0.size > 0 }
         guard !children.isEmpty else { return [] }
 
         let total = children.reduce(Int64(0)) { $0 + $1.displaySize }
@@ -107,6 +107,23 @@ final class DiskAnalyzerViewModel {
 
     var showScanPanel: Bool {
         isScanning || isBackgroundScanning
+    }
+
+    var hasScanResults: Bool {
+        diskIndex.root != nil
+    }
+
+    var diskIndexRoot: FileNode? {
+        diskIndex.root
+    }
+
+    var isShowingAnalyzer: Bool {
+        currentNode != nil || hasScanResults
+    }
+
+    func ensureCurrentNodeDisplayed() {
+        guard currentNode == nil, let root = diskIndex.root else { return }
+        resetNavigation(to: root)
     }
 
     func toggleScanPath(_ path: String) {
@@ -203,10 +220,13 @@ final class DiskAnalyzerViewModel {
         let resolved = resolveNode(node)
 
         if resolved.children.isEmpty {
+            // Спочатку перейти щоб показати лоадер
+            moveToNode(resolved, recordHistory: true)
+            // Потім розгорнути і оновити
             expandFolderIfNeeded(resolved)
+        } else {
+            moveToNode(resolved, recordHistory: true)
         }
-
-        moveToNode(resolved, recordHistory: true)
     }
 
     func navigateBack() {
@@ -221,10 +241,31 @@ final class DiskAnalyzerViewModel {
         syncNavigationFromHistory()
     }
 
+    func navigateToDisksRoot() {
+        guard let root = diskIndex.root else { return }
+        historyPaths = [root.url]
+        historyIndex = 0
+        moveToNode(root, recordHistory: false)
+        updateHistoryFlags()
+    }
+
     func navigateToBreadcrumb(index: Int) {
         guard index >= 0, index < breadcrumb.count else { return }
-        let node = breadcrumb[index]
-        moveToNode(node, recordHistory: true)
+        let target = breadcrumb[index]
+
+        let node: FileNode
+        if target.kind == .groupedSmall {
+            node = target
+        } else if let indexed = diskIndex.node(at: target.url) {
+            node = indexed
+        } else {
+            node = target
+        }
+
+        historyPaths = breadcrumb.prefix(index + 1).map(\.url)
+        historyIndex = index
+        moveToNode(node, recordHistory: false)
+        updateHistoryFlags()
     }
 
     func addToBasket(_ node: FileNode, isGroupedSmall: Bool = false) {
@@ -385,17 +426,20 @@ final class DiskAnalyzerViewModel {
         scanProgress = max(scanProgress, 0.6)
         appendScanLog("→ Уточнення дерева…")
 
-        if !preserveNavigation, currentNode == nil || currentNode?.url.path == "/" {
-            resetNavigation(to: partial)
-            isScanning = false
-        } else if currentNode?.url.path == "/" {
-            currentNode = partial
-            isScanning = false
+        if !preserveNavigation {
+            if currentNode == nil {
+                resetNavigation(to: partial)
+                isScanning = false
+            } else if currentNode?.url.path == "/" {
+                currentNode = partial
+                isScanning = false
+            }
         }
     }
 
     private func applyScanResult(preserveNavigation: Bool, fallbackNode: FileNode) {
-        if preserveNavigation, let current = currentNode {
+        let keepLocation = preserveNavigation || (currentNode != nil && currentNode?.url.path != "/")
+        if keepLocation, let current = currentNode {
             if let refreshed = diskIndex.node(at: current.url) {
                 moveToNode(refreshed, recordHistory: false)
             } else {
@@ -458,8 +502,11 @@ final class DiskAnalyzerViewModel {
             let expanded = await DirectoryScanner.scanFolder(at: node.url)
             diskIndex.merge(expanded)
 
+            // Оновити currentNode якщо юзер все ще дивиться на цю папку
             if let refreshed = diskIndex.node(at: node.url) {
-                moveToNode(refreshed, recordHistory: false)
+                if currentNode?.url.standardizedFileURL == node.url.standardizedFileURL {
+                    moveToNode(refreshed, recordHistory: false)
+                }
             }
             isExpandingFolder = false
         }

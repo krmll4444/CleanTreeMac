@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -69,11 +70,24 @@ private struct FileListRow: View {
         if item.isFooter {
             return .secondary
         }
-        return item.node.isDirectory ? .primary : .secondary
+        return item.node.isDirectory ? .primary : Color.primary.opacity(0.75)
     }
 
     private var isInteractive: Bool {
-        !item.isFooter && item.node.isNavigable
+        !item.isFooter
+            && item.node.kind != .hiddenSpace
+            && item.node.kind != .freeSpace
+            && item.node.kind != .freeAndPurgeable
+    }
+
+    private var isFileRow: Bool {
+        isInteractive && !item.node.isDirectory && !item.isGroupedSmall
+    }
+
+    private var canOpenInFinder: Bool {
+        isInteractive
+            && !item.node.url.path.hasPrefix("/.cleantree/")
+            && FileManager.default.fileExists(atPath: item.node.url.path)
     }
 
     var body: some View {
@@ -99,6 +113,13 @@ private struct FileListRow: View {
                 .foregroundStyle(item.node.size == 0 && item.node.isDirectory ? .tertiary : .secondary)
                 .monospacedDigit()
 
+            if isFileRow && isHovered {
+                Image(systemName: "plus.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Додати в кошик")
+            }
+
             if isInteractive && (item.node.isDirectory || item.isGroupedSmall) {
                 Image(systemName: "chevron.right")
                     .font(.caption)
@@ -110,16 +131,31 @@ private struct FileListRow: View {
         .background(isHovered ? AppTheme.hoverHighlight : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
-            guard isInteractive, item.node.kind == .folder else { return }
-            onAddToBasket(item)
+            guard isInteractive else { return }
+            if item.node.kind == .folder {
+                onAddToBasket(item)
+            } else if isFileRow {
+                onAddToBasket(item)
+            }
         }
         .onTapGesture {
-            guard isInteractive, item.node.isDirectory || item.isGroupedSmall else { return }
-            onSelect(item)
+            guard isInteractive else { return }
+            if item.node.isDirectory || item.isGroupedSmall {
+                onSelect(item)
+            } else {
+                onAddToBasket(item)
+            }
         }
         .onHover { hovering in
             guard isInteractive else { return }
             onHover(hovering ? item.node.id : nil)
+        }
+        .contextMenu {
+            if canOpenInFinder {
+                Button("Open with Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.node.url])
+                }
+            }
         }
         .onDrag {
             guard item.node.kind == .folder else {

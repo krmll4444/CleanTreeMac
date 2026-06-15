@@ -7,8 +7,11 @@ struct DiskAnalyzerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.currentNode != nil {
+            if viewModel.isShowingAnalyzer {
                 analyzerContent
+                    .onAppear {
+                        viewModel.ensureCurrentNodeDisplayed()
+                    }
             } else {
                 HomeScreenView(
                     volumeName: viewModel.volumeDisplayName,
@@ -30,7 +33,7 @@ struct DiskAnalyzerView: View {
                     scanStartDate: viewModel.scanStartDate,
                     onCancel: viewModel.cancelScan
                 )
-            } else if viewModel.currentNode != nil {
+            } else if viewModel.isShowingAnalyzer {
                 BasketView(
                     items: viewModel.basket,
                     onRemove: viewModel.removeFromBasket,
@@ -53,7 +56,7 @@ struct DiskAnalyzerView: View {
         VStack(spacing: 0) {
             topBar
 
-            if let current = viewModel.currentNode {
+            if let current = viewModel.currentNode ?? viewModel.diskIndexRoot {
                 mainContent(for: current)
             }
         }
@@ -81,9 +84,11 @@ struct DiskAnalyzerView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
 
-            BreadcrumbView(breadcrumb: viewModel.breadcrumb) { index in
-                viewModel.navigateToBreadcrumb(index: index)
-            }
+            BreadcrumbView(
+                breadcrumb: viewModel.breadcrumb,
+                onSelectRoot: { viewModel.navigateToDisksRoot() },
+                onSelect: { viewModel.navigateToBreadcrumb(index: $0) }
+            )
 
             Spacer()
 
